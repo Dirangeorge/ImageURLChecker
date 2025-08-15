@@ -1,0 +1,83 @@
+name: Check Image URLs for 404s
+
+on:
+  push:
+    paths:
+      - "input/*.csv"
+  workflow_dispatch:
+    inputs:
+      csv_path:
+        description: "Path to CSV to process (e.g., input/vca_gmc_product_catalog.csv)"
+        required: false
+        type: string
+      column_name:
+        description: "Name of the URL column (default: IMAGE_URLS)"
+        required: false
+        type: string
+
+permissions:
+  contents: write  # allow committing results
+
+jobs:
+  check-urls:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set CSV path
+        id: setpath
+        run: |
+          if [ -n "${{ github.event.inputs.csv_path }}" ]; then
+            echo "csv=${{ github.event.inputs.csv_path }}" >> $GITHUB_OUTPUT
+          else
+            # Pick the newest CSV in /input when triggered by push
+            LATEST=$(ls -1t input/*.csv | head -n 1)
+            echo "csv=$LATEST" >> $GITHUB_OUTPUT
+          fi
+          if [ -n "${{ github.event.inputs.column_name }}" ]; then
+            echo "col=${{ github.event.inputs.column_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "col=IMAGE_URLS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Show chosen CSV
+        run: |
+          echo "CSV: ${{ steps.setpath.outputs.csv }}"
+          echo "Column: ${{ steps.setpath.outputs.col }}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run checker
+        run: |
+          mkdir -p output
+          base="$(basename "${{ steps.setpath.outputs.csv }}" .csv)"
+          python scripts/check_image_404s.py \
+            --input "${{ steps.setpath.outputs.csv }}" \
+            --output "output/${base}_404s.csv" \
+            --column "${{ steps.setpath.outputs.col }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-url-404s
+          path: output/*.csv
+          if-no-files-found: error
+
+      - name: Commit results to repo
+        run: |
+          if [ -n "$(git status --porcelain output)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add output/*.csv
+            git commit -m "Add 404 report for $(basename "${{ steps.setpath.outputs.csv }}")"
+            git push
+          else
+            echo "No changes to commit."
+          fi
